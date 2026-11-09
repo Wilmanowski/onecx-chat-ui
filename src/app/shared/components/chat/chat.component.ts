@@ -232,10 +232,6 @@ export class ChatComponent implements AfterViewInit, AfterViewChecked, OnChanges
     this.formGroup.reset()
   }
 
-  get selectedAgent(): ChatAgent | undefined {
-    return this.agents.find((agent) => agent.id === this.selectedAgentId)
-  }
-
   retrySending(msg: ChatMessage) {
     this.retrySendMessage.emit(msg.text)
   }
