@@ -50,6 +50,8 @@ export class VoiceComponent implements OnChanges, OnDestroy {
   @Input() voiceChatEnabled = false
   @Input() voiceChatStartPending = false
   @Input() voiceChatStartError: string | undefined
+  @Input() gatherContext = false
+  @Input() contextAgentName = ''
 
   @Output() voiceChatStarted = new EventEmitter<void>()
   @Output() voiceChatStopped = new EventEmitter<void>()
@@ -152,6 +154,7 @@ export class VoiceComponent implements OnChanges, OnDestroy {
           this.voiceChatStartFailed.emit({ attemptId })
           return
         }
+        await this.voiceService.prepareStart(this.gatherContext ? this.contextAgentName : undefined)
         this.voiceChatStartRequested.emit({ attemptId, agentId })
       } catch {
         this.voiceChatStartFailed.emit({ attemptId })
@@ -160,7 +163,7 @@ export class VoiceComponent implements OnChanges, OnDestroy {
     }
 
     try {
-      await this.voiceService.start(this.chatId, this.agentId)
+      await this.voiceService.start(this.chatId, this.agentId, this.gatherContext ? this.contextAgentName : undefined)
       this.voiceChatStarted.emit()
     } catch (error) {
       this.voiceChatStopped.emit()

@@ -138,6 +138,8 @@
               [isAiChat]="isAiChat"
               [agentId]="selectedAgentId ?? ''"
               [agentVoiceEnabled]="selectedAgent?.voiceEnabled === true"
+              [gatherContext]="!!selectedAgent?.gatherContext"
+              [contextAgentName]="selectedAgent?.agentName ?? ''"
               [voiceChatEnabled]="voiceChatEnabled"
               [voiceChatStartPending]="voiceChatStartPending"
               [voiceChatStartError]="voiceChatStartError"

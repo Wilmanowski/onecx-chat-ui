@@ -1,5 +1,6 @@
 import { inject, Injectable, Injector, NgZone, OnDestroy, runInInjectionContext, signal } from '@angular/core'
 import { AuthProxyService } from '@onecx/angular-auth'
+import { AiContextGatherer, AiContextResponse } from '@onecx/integration-interface'
 import { Subject } from 'rxjs'
 
 import { environment } from '../../../environments/environment'
@@ -66,6 +67,23 @@ function storeMicrophoneId(deviceId: string | undefined): void {
   }
 }
 
+// Limits of the voice service: it rejects the whole session start when they are exceeded.
+/** Responder for the gatherer's own requests: the voice service has no page context of its own to contribute. */
+export function noPageContext(): Promise<null> {
+  return Promise.resolve(null)
+}
+
+const MAX_AI_CONTEXT_ENTRIES = 20
+const MAX_AI_CONTEXT_ENTRY_CHARS = 8000
+
+/** Keeps the entries the voice service accepts; oversized entries are dropped, not truncated. */
+function limitAiContext(responses: AiContextResponse[]): string[] {
+  return responses
+    .map((response) => JSON.stringify(response))
+    .filter((entry) => entry.length <= MAX_AI_CONTEXT_ENTRY_CHARS)
+    .slice(0, MAX_AI_CONTEXT_ENTRIES)
+}
+
 function parseEvent(data: unknown): VoiceEvent | undefined {
   if (typeof data !== 'string') return undefined
   try {
@@ -120,6 +138,12 @@ export class VoiceService implements OnDestroy {
   private principalToken = ''
   private refreshTimer: ReturnType<typeof setInterval> | undefined
   private refreshing = false
+  // Orders page-context refreshes: a result is sent only if no newer refresh was already sent.
+  private contextRefreshSequence = 0
+  private contextSentSequence = 0
+  // Agent whose page context is gathered for each turn; undefined when the agent has none.
+  private contextAgentName: string | undefined
+  private readonly aiContextGatherer = new AiContextGatherer(noPageContext)
 
   private audioContext: AudioContext | undefined
   private captureNode: AudioWorkletNode | undefined
@@ -134,19 +158,24 @@ export class VoiceService implements OnDestroy {
     void this.handleDeviceChange()
   }
 
-  async start(chatId: string, agentId: string): Promise<void> {
+  /**
+   * @param contextAgentName agent whose page context is sent with the session and before each
+   * turn; leave undefined for agents that do not use page context.
+   */
+  async start(chatId: string, agentId: string, contextAgentName?: string): Promise<void> {
     if (this.isConnected() || this.isConnecting()) return
     if (!agentId) throw new Error('Voice: no agent selected')
 
-    await this.prepareStart()
+    await this.prepareStart(contextAgentName)
     await this.startPrepared(chatId, agentId)
   }
 
-  async prepareStart(): Promise<void> {
+  async prepareStart(contextAgentName?: string): Promise<void> {
     if (this.isConnected() || this.isConnecting()) throw new Error('Voice: start already in progress')
 
     const generation = this.generation
     this.isConnecting.set(true)
+    this.contextAgentName = contextAgentName
     try {
       // Created before the first await, while the click that started the voice chat still
       // counts as a user gesture; otherwise the browser may keep the audio suspended.
@@ -173,7 +202,9 @@ export class VoiceService implements OnDestroy {
       if (!agentId) throw new Error('Voice: no agent selected')
       await this.updateTokens()
       this.assertCurrent(generation)
-      await this.openSession(chatId, agentId)
+      const aiContext = (await this.gatherAiContext()) ?? []
+      this.assertCurrent(generation)
+      await this.openSession(chatId, agentId, aiContext)
     } catch (error) {
       if (generation === this.generation) this.release()
       throw error
@@ -213,11 +244,42 @@ export class VoiceService implements OnDestroy {
 
   ngOnDestroy(): void {
     this.cleanup()
+    this.aiContextGatherer.destroy()
   }
 
   // -- session ------------------------------------------------------------
 
-  private openSession(chatId: string, agentId: string): Promise<void> {
+  /**
+   * Gathers the page context of the agent's MFEs. Resolves to undefined when gathering fails,
+   * so that a failure does not replace a context that was sent before.
+   */
+  private async gatherAiContext(): Promise<string[] | undefined> {
+    if (!this.contextAgentName) return []
+    try {
+      const responses = await this.aiContextGatherer.gather({ agent: { name: this.contextAgentName } })
+      return limitAiContext(responses.filter((response): response is AiContextResponse => response !== null))
+    } catch (error) {
+      console.warn('Voice: could not gather the page context:', error)
+      return undefined
+    }
+  }
+
+  /** Sends the current page context before a turn, so the assistant answers about the page the user is on. */
+  private refreshAiContext(): void {
+    if (!this.contextAgentName) return
+    const generation = this.generation
+    const sequence = ++this.contextRefreshSequence
+    void this.gatherAiContext().then((aiContext) => {
+      // A slower gather of an earlier turn must not overwrite the context of a later one.
+      if (sequence <= this.contextSentSequence) return
+      if (aiContext && generation === this.generation && this.ready) {
+        this.contextSentSequence = sequence
+        this.send({ type: 'context_update', ai_context: aiContext })
+      }
+    })
+  }
+
+  private openSession(chatId: string, agentId: string, aiContext: string[]): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       // Outside Angular: audio arrives every few milliseconds and must not trigger change detection.
       this.zone.runOutsideAngular(() => {
@@ -227,7 +289,7 @@ export class VoiceService implements OnDestroy {
         )
         this.pendingStart = { resolve, reject, timer }
         const socket = new WebSocket(this.socketUrl())
-        socket.onopen = () => this.sendStartSession(chatId, agentId)
+        socket.onopen = () => this.sendStartSession(chatId, agentId, aiContext)
         socket.onmessage = (message: MessageEvent) => this.onSocketMessage(message)
         socket.onclose = () => this.zone.run(() => this.finish('connection_closed'))
         this.socket = socket
@@ -241,7 +303,7 @@ export class VoiceService implements OnDestroy {
     return `${location.protocol.replace('http', 'ws')}//${location.host}/ws/voice`
   }
 
-  private sendStartSession(chatId: string, agentId: string): void {
+  private sendStartSession(chatId: string, agentId: string, aiContext: string[]): void {
     const { apmPrincipalToken, authorization } = this.readTokens()
     this.principalToken = apmPrincipalToken
     this.send({
@@ -249,7 +311,8 @@ export class VoiceService implements OnDestroy {
       chat_id: chatId,
       agent_id: agentId,
       apm_principal_token: apmPrincipalToken,
-      authorization
+      authorization,
+      ai_context: aiContext
     })
   }
 
@@ -279,6 +342,7 @@ export class VoiceService implements OnDestroy {
         this.userTurnFinals = []
         // Closes the current assistant message, so the next reply gets its own message.
         this.userTranscript$.next({ text: '', isFinal: false })
+        this.refreshAiContext()
         break
       case 'user_stopped_speaking':
         this.endUserTurn()
