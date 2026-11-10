@@ -161,8 +161,15 @@ export class VoiceComponent implements OnChanges, OnDestroy {
       return
     }
 
+    const chatId = this.chatId
+    const agentId = this.agentId
     try {
-      await this.voiceService.start(this.chatId, this.agentId, this.gatherContext ? this.contextAgentName : undefined)
+      await this.voiceService.prepareStart(this.gatherContext ? this.contextAgentName : undefined)
+      if (!this.canStart || this.chatId !== chatId || this.agentId !== agentId) {
+        this.stop()
+        return
+      }
+      await this.voiceService.startPrepared(chatId, agentId)
       this.voiceChatStarted.emit()
     } catch (error) {
       this.voiceChatStopped.emit()
