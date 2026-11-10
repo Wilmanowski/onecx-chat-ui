@@ -107,7 +107,7 @@ describe('VoiceComponent', () => {
       await component.onClick()
 
       expect(fixture.nativeElement.querySelector('button.voice-record-button').disabled).toBe(false)
-      expect(start).toHaveBeenCalledWith('chat-1', 'agent-1')
+      expect(start).toHaveBeenCalledWith('chat-1', 'agent-1', undefined)
     })
 
     it('should cancel preparation when permission is revoked while waiting for the microphone', async () => {
@@ -226,6 +226,7 @@ describe('VoiceComponent', () => {
       await component.onClick()
 
       expect(order).toEqual(['preparation-started', 'prepare-audio', 'create-chat'])
+      expect(voiceService.prepareStart).toHaveBeenCalledTimes(1)
       expect(requested).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'agent-1' }))
     })
 
@@ -535,7 +536,7 @@ describe('VoiceComponent remote permissions', () => {
     await fixture.componentInstance.onClick()
 
     expect(fixture.nativeElement.querySelector('button.voice-record-button').disabled).toBe(false)
-    expect(start).toHaveBeenCalledWith('chat-1', 'agent-1')
+    expect(start).toHaveBeenCalledWith('chat-1', 'agent-1', undefined)
   })
 
   it('should not inherit voice permission from the active app', async () => {
