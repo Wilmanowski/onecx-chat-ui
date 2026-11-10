@@ -153,16 +153,19 @@ describe('VoiceComponent', () => {
       expect(failed).toHaveBeenCalled()
     })
 
-    it('should clean up and emit voiceChatStopped when voice chat is already enabled', async () => {
+    it.each([true, false])('should allow manual stop with voice permission granted: %s', async (hasPermission) => {
+      permissions.next(hasPermission ? ['VOICE#USE'] : [])
       const cleanup = jest.spyOn(voiceService, 'cleanup')
       const started = jest.spyOn(component.voiceChatStarted, 'emit')
       const stopped = jest.spyOn(component.voiceChatStopped, 'emit')
-      component.voiceChatEnabled = true
+      fixture.componentRef.setInput('voiceChatEnabled', true)
+      fixture.detectChanges()
 
+      expect(fixture.nativeElement.querySelector('button.voice-record-button').disabled).toBe(false)
       await component.onClick()
 
-      expect(cleanup).toHaveBeenCalled()
-      expect(stopped).toHaveBeenCalled()
+      expect(cleanup).toHaveBeenCalledTimes(1)
+      expect(stopped).toHaveBeenCalledTimes(1)
       expect(started).not.toHaveBeenCalled()
     })
 
@@ -348,6 +351,51 @@ describe('VoiceComponent', () => {
     component.ngOnDestroy()
 
     expect(cleanup).toHaveBeenCalled()
+  })
+
+  describe('permission changes', () => {
+    it.each(['isConnected', 'isConnecting'] as const)(
+      'should stop the voice session when voice permission is revoked (%s)',
+      (state) => {
+        voiceService[state].set(true)
+        fixture.detectChanges()
+        const cleanup = jest.spyOn(voiceService, 'cleanup')
+        const stopped = jest.spyOn(component.voiceChatStopped, 'emit')
+
+        permissions.next(['CHAT#VIEW'])
+        fixture.detectChanges()
+        fixture.detectChanges()
+
+        expect(cleanup).toHaveBeenCalledTimes(1)
+        expect(stopped).toHaveBeenCalledTimes(1)
+        expect(voiceService.isConnected()).toBe(false)
+        expect(voiceService.isConnecting()).toBe(false)
+      }
+    )
+
+    it('should leave the session running when voice permission is retained', () => {
+      voiceService.isConnected.set(true)
+      const cleanup = jest.spyOn(voiceService, 'cleanup')
+      const stopped = jest.spyOn(component.voiceChatStopped, 'emit')
+
+      permissions.next(['VOICE#USE', 'CHAT#VIEW'])
+      fixture.detectChanges()
+
+      expect(cleanup).not.toHaveBeenCalled()
+      expect(stopped).not.toHaveBeenCalled()
+      expect(voiceService.isConnected()).toBe(true)
+    })
+
+    it('should not emit a stop when permission is revoked without an active session', () => {
+      const cleanup = jest.spyOn(voiceService, 'cleanup')
+      const stopped = jest.spyOn(component.voiceChatStopped, 'emit')
+
+      permissions.next([])
+      fixture.detectChanges()
+
+      expect(cleanup).not.toHaveBeenCalled()
+      expect(stopped).not.toHaveBeenCalled()
+    })
   })
 
   describe('chat change', () => {
@@ -600,5 +648,21 @@ describe('VoiceComponent remote permissions', () => {
 
     setRemotePermissions([])
     expect(fixture.nativeElement.querySelector('button.voice-record-button').disabled).toBe(true)
+  })
+
+  it('should stop an active session when remote voice permission is revoked despite global permission', () => {
+    globalPermissions.next(['VOICE#USE'])
+    setRemotePermissions(['VOICE#USE'])
+    const voiceService = TestBed.inject(VoiceService)
+    voiceService.isConnected.set(true)
+    fixture.detectChanges()
+    const cleanup = jest.spyOn(voiceService, 'cleanup')
+    const stopped = jest.spyOn(fixture.componentInstance.voiceChatStopped, 'emit')
+
+    setRemotePermissions([])
+
+    expect(cleanup).toHaveBeenCalledTimes(1)
+    expect(stopped).toHaveBeenCalledTimes(1)
+    expect(voiceService.isConnected()).toBe(false)
   })
 })

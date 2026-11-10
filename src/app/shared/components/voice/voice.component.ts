@@ -1,13 +1,15 @@
 import {
   Component,
   computed,
+  effect,
   EventEmitter,
   inject,
   Input,
   OnChanges,
   OnDestroy,
   Output,
-  SimpleChanges
+  SimpleChanges,
+  untracked
 } from '@angular/core'
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop'
 import { TranslateModule, TranslateService } from '@ngx-translate/core'
@@ -103,6 +105,12 @@ export class VoiceComponent implements OnChanges, OnDestroy {
   }
 
   constructor() {
+    effect(() => {
+      if (!this.permissions().includes('VOICE#USE') && (this.isConnected() || this.isConnecting())) {
+        untracked(() => this.stop())
+      }
+    })
+
     // Bridge transcript events
     this.voiceService.userTranscript$
       .pipe(takeUntilDestroyed())
